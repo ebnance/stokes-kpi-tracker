@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -13,8 +14,6 @@
 <meta name="msapplication-TileColor" content="#1e3a5f">
 <!-- Inline Apple Touch Icon (SVG → data URI, no external files needed) -->
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='38' fill='%231e3a5f'/%3E%3Crect x='56' y='38' width='80' height='116' rx='9' fill='white'/%3E%3Crect x='74' y='26' width='44' height='22' rx='7' fill='%231e3a5f'/%3E%3Cline x1='70' y1='80' x2='122' y2='80' stroke='%23e2e8f0' stroke-width='7' stroke-linecap='round'/%3E%3Cline x1='70' y1='100' x2='108' y2='100' stroke='%23e2e8f0' stroke-width='7' stroke-linecap='round'/%3E%3Cpolyline points='66,122 76,136 98,110' stroke='%23059669' stroke-width='8' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
-<!-- Splash screen tints for iOS -->
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Inspection KPI Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -531,7 +530,7 @@ tbody td{padding:10px 14px}
         <div class="card-title">Performance Summary — All Time</div>
         <div class="table-wrap" style="margin-top:10px">
           <table>
-            <thead><tr><th>Inspector</th><th>Total</th><th>Passed</th><th>Failed</th><th>Partial</th><th>Pass Rate</th><th>Re-Insp.</th><th>Cases</th></tr></thead>
+            <thead><tr><th>Inspector</th><th>Total</th><th>Passed</th><th>Failed</th><th>Partial</th><th>Pass Rate</th><th>Re-Insp.</th><th>Cases</th><th></th></tr></thead>
             <tbody id="inspectorTable"></tbody>
           </table>
         </div>
@@ -693,6 +692,7 @@ let importStep = 'upload';
 let csvHeaders = [], csvRows = [], mapping = {}, importFileName = '', previewRows = [];
 let deferredInstallPrompt = null;
 let sheetsUrl = '', syncState = 'offline';
+let openMonthKeys = new Set(); // tracks which month accordions are expanded
 
 const TARGETS = {
   avgResponseTime:   {value:2.5, label:'≤ 2.5 days', lowerIsBetter:true},
@@ -920,6 +920,14 @@ async function loadFromSheets(){
     if(json.status==='ok'&&Array.isArray(json.data)&&json.data.length>0){
       inspections=json.data.map(r=>({...r,isReinspection:r.isReinspection==='true'||r.isReinspection===true}));
       saveLocalOnly(); renderEntryTable(); updateInsightBadge();
+      // Re-render whatever tab is currently open
+      const tab=getActiveTab();
+      if(tab==='dashboard')       renderDashboard();
+      else if(tab==='monthly')    renderMonthlyData();
+      else if(tab==='trends')     renderTrends();
+      else if(tab==='inspectors') renderInspectors();
+      else if(tab==='recommendations') renderRecommendations();
+      else if(tab==='insights')   renderInsights();
       setSyncState('connected','Last loaded: '+new Date().toLocaleTimeString());
     } else if(json.status==='ok'&&json.data.length===0){
       setSyncState('connected','Sheet empty — pushing local data'); saveToSheets();
@@ -952,7 +960,10 @@ function disconnectSheets(){
 function syncNow(){ if(sheetsUrl) loadFromSheets(); }
 function renderSyncTab(){ renderSyncStatusCard(); const ui=document.getElementById('sheetsUrlInput'); if(ui&&sheetsUrl) ui.value=sheetsUrl; }
 function copyScript(){
-  const code=document.getElementById('appsScriptCode').innerText.replace('Copy','').trim();
+  // Read the raw text content only (exclude the button element)
+  const block=document.getElementById('appsScriptCode');
+  const textNodes=[...block.childNodes].filter(n=>n.nodeType===Node.TEXT_NODE).map(n=>n.textContent).join('');
+  const code=textNodes.trim()||block.innerText.replace(/Copy(ied!)?/g,'').trim();
   navigator.clipboard.writeText(code).then(()=>{
     const btn=document.querySelector('.code-copy-btn'); if(btn){btn.textContent='Copied!';setTimeout(()=>btn.textContent='Copy',2000);}
   }).catch(()=>prompt('Copy this script:',code));
@@ -973,7 +984,7 @@ function normalizeDate(val){
   const d=new Date(val); if(!isNaN(d)) return d.toISOString().split('T')[0];
   const parts=val.split(/[\/\-\.]/);
   if(parts.length===3){const[a,b,c]=parts;if(c.length===4) return `${c}-${a.padStart(2,'0')}-${b.padStart(2,'0')}`;}
-  return val;
+  return '';  // unrecognizable — don't pass garbage into date fields
 }
 function extractCaseNumber(title){
   if(!title) return '';
@@ -1017,8 +1028,8 @@ function calcKPIsForMonth(key){
   const reinsp=md.filter(i=>i.isReinspection);
   const ft=md.filter(i=>!i.isReinspection);
   const ftp=ft.length?(ft.filter(i=>i.result==='Pass').length/ft.length)*100:0;
-  const rt=md.map(i=>Math.max(0,(new Date(i.completionDate)-new Date(i.requestDate))/86400000));
-  const avg=rt.reduce((a,b)=>a+b,0)/rt.length;
+  const rt=md.map(i=>{const diff=(new Date(i.completionDate)-new Date(i.requestDate))/86400000;return(isNaN(diff)||diff<0)?0:diff;});
+  const avg=rt.length?rt.reduce((a,b)=>a+b,0)/rt.length:0;
   const inspList=[...new Set(md.map(i=>i.inspector))];
   const perDay=md.length/(inspList.length*20);
   return {
@@ -1055,9 +1066,18 @@ function addInspector(){
   populateInspectorDropdown(); renderInspectors();
 }
 function removeInspector(name){
-  if(!confirm(`Remove "${name}" from the roster?\nTheir inspection records will be kept.`)) return;
+  // Roster-only removal — keeps all their inspection records intact
+  if(!confirm(`Remove "${name}" from the roster?\n\nTheir inspection records will be kept but they won't appear in the Data Entry dropdown.`)) return;
   customInspectors=customInspectors.filter(n=>n!==name);
   saveInspectors(); populateInspectorDropdown(); renderInspectors();
+}
+function deleteInspectorWithRecords(name){
+  const count=inspections.filter(i=>i.inspector===name).length;
+  if(!confirm(`Delete ALL ${count} inspection records for "${name}" AND remove them from the roster?\n\nThis cannot be undone.`)) return;
+  inspections=inspections.filter(i=>i.inspector!==name);
+  customInspectors=customInspectors.filter(n=>n!==name);
+  saveData(); saveInspectors(); populateInspectorDropdown();
+  renderEntryTable(); updateInsightBadge(); renderInspectors();
 }
 function syncInspectorsFromData(){
   const found=[...new Set(inspections.map(i=>i.inspector).filter(Boolean))];
@@ -1069,9 +1089,14 @@ function syncInspectorsFromData(){
 // ─────────────────────────────────────────────────────────────────
 // TAB SWITCHING
 // ─────────────────────────────────────────────────────────────────
+const ALL_TABS=['entry','import','dashboard','monthly','trends','inspectors','recommendations','insights','sync'];
+function getActiveTab(){
+  return ALL_TABS.find(t=>document.getElementById('tab-'+t)?.style.display!=='none')||'entry';
+}
+
 function switchTab(name){
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
-  ['entry','import','dashboard','monthly','trends','inspectors','recommendations','insights','sync'].forEach(t=>{
+  ALL_TABS.forEach(t=>{
     document.getElementById('tab-'+t).style.display=t===name?'block':'none';
   });
   if(name==='dashboard')       renderDashboard();
@@ -1101,6 +1126,7 @@ function addInspection(){
     address:document.getElementById('f-address').value.trim(),
   });
   saveData(); renderEntryTable(); updateInsightBadge();
+  if(document.getElementById('tab-monthly').style.display!=='none') renderMonthlyData();
   ['f-caseNumber','f-requestDate','f-completionDate','f-address'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('f-result').value='Pass';
   document.getElementById('f-reinspection').checked=false;
@@ -1131,6 +1157,7 @@ function renderEntryTable(){
     return;
   }
   if(selAllBtn) selAllBtn.style.display='inline-flex';
+  if(selAllBtn) selAllBtn.textContent='Select All';
   tbody.innerHTML=recent.map(i=>`<tr id="row-${i.id}">
     <td><input type="checkbox" class="row-check entry-cb" data-id="${i.id}" onchange="onRowCheck()" title="Select row"></td>
     <td><strong>${esc(i.inspector)}</strong></td>
@@ -1306,7 +1333,7 @@ function renderMonthlyData(){
     </tr>`).join('');
 
     return `<div class="month-row" style="border-color:${borderCol}">
-      <div class="month-row-header" onclick="toggleMonth(${gi})" id="mhdr-${gi}">
+      <div class="month-row-header" onclick="toggleMonth(${gi},'${m.key}')" id="mhdr-${gi}">
         <div style="display:flex;align-items:center;gap:14px;flex:1;min-width:0">
           <div class="month-row-title">${m.label}</div>
           <div class="month-chips">
@@ -1336,12 +1363,23 @@ function renderMonthlyData(){
       </div>
     </div>`;
   }).join('');
+
+  // Restore previously open accordions
+  months.forEach((m,gi)=>{
+    if(openMonthKeys.has(m.key)){
+      const body=document.getElementById(`mbody-${gi}`);
+      const chv =document.getElementById(`mchv-${gi}`);
+      if(body) body.classList.add('open');
+      if(chv)  chv.textContent='▼';
+    }
+  });
 }
 
-function toggleMonth(gi){
+function toggleMonth(gi, key){
   const body=document.getElementById(`mbody-${gi}`),chv=document.getElementById(`mchv-${gi}`);
   const open=body.classList.toggle('open');
   chv.textContent=open?'▼':'▶';
+  if(open) openMonthKeys.add(key); else openMonthKeys.delete(key);
 }
 
 function deleteMonth(key){
@@ -1349,6 +1387,7 @@ function deleteMonth(key){
   const count=inspections.filter(i=>monthKey(i.requestDate)===key).length;
   if(!confirm(`Delete ALL ${count} inspection records from ${lbl}?\n\nThis cannot be undone.`)) return;
   inspections=inspections.filter(i=>monthKey(i.requestDate)!==key);
+  openMonthKeys.delete(key);  // Fix 6: prune stale key
   saveData(); renderEntryTable(); updateInsightBadge(); renderMonthlyData();
 }
 
@@ -1403,9 +1442,9 @@ function renderInspectors(){
     return {name,total:recs.length,passed,failed,partial,passRate,reinsp,cases};
   }).sort((a,b)=>b.total-a.total);
 
-  const tbody=document.getElementById('inspectorTable');
   tbody.innerHTML=stats.map(s=>{
-    if(!s.total) return `<tr><td><strong>${esc(s.name)}</strong></td><td colspan="7" style="color:var(--text-muted);font-size:13px">No records yet</td></tr>`;
+    const delBtn=`<button class="btn-delete" onclick="deleteInspectorWithRecords('${esc(s.name)}')" title="Delete all records for this inspector"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>`;
+    if(!s.total) return `<tr><td><strong>${esc(s.name)}</strong></td><td colspan="7" style="color:var(--text-muted);font-size:13px">No records yet</td><td>${delBtn}</td></tr>`;
     const cls=s.passRate>=75?'trend-up-good':s.passRate>0?'trend-up-bad':'trend-neutral';
     return `<tr>
       <td><strong>${esc(s.name)}</strong></td>
@@ -1416,6 +1455,7 @@ function renderInspectors(){
       <td class="${cls}">${s.passRate}%</td>
       <td>${s.reinsp}</td>
       <td>${s.cases}</td>
+      <td>${delBtn}</td>
     </tr>`;
   }).join('');
 
@@ -1429,7 +1469,7 @@ function renderInspectors(){
           <div class="insp-avatar">${initials}</div>
           <div><div class="insp-name">${esc(s.name)}</div><div class="insp-sub">${s.total} inspections</div></div>
         </div>
-        <button class="btn-delete" onclick="removeInspector('${esc(s.name)}')" title="Remove from roster">
+        <button class="btn-delete" onclick="deleteInspectorWithRecords('${esc(s.name)}')" title="Delete all records for this inspector">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
         </button>
       </div>
@@ -1543,7 +1583,7 @@ function renderRecommendations(){
   if(failRate>30) html+=recCard('critical','🚨',`Overall Fail Rate is High at ${failRate}%`,`${failed.length} of ${total} inspections failed this period. Target is below 25%. Applicants may be scheduling before work is truly ready.`,[[''+failed.length+' failures','red'],['Target: <25%','red'],['Review applicant prep','amber']]);
   if(repeatFails.length) html+=recCard('critical','🔁','Multiple Cases Have Repeated Failures',`${repeatFails.length} case(s) failed 2+ times: ${repeatFails.slice(0,5).map(([c,v])=>`${c} (${v.fails}×)`).join(', ')}.`,repeatFails.slice(0,5).map(([c,v])=>[c+': '+v.fails+'×','red']));
   if(mhFailRate>=60&&mhInsp.length>=3) html+=recCard('critical','🏠',`Mobile Home Inspections Failing at ${mhFailRate}%`,`${mhFail.length} of ${mhInsp.length} Mobile Home – Underneath inspections failed. Common issues: missing pier load docs, incorrect tie-down spacing, incomplete DWV tests.`,[[''+mhFail.length+'/'+mhInsp.length+' failed','red'],['Pre-approval checklist needed','amber']]);
-  if(!failRate>30&&!repeatFails.length&&!(mhFailRate>=60&&mhInsp.length>=3)) html+=recCard('success','✅','No Critical Issues Found','All critical thresholds are within acceptable ranges for this period.',[]);
+  if(failRate<=30&&!repeatFails.length&&!(mhFailRate>=60&&mhInsp.length>=3)) html+=recCard('success','✅','No Critical Issues Found','All critical thresholds are within acceptable ranges for this period.',[]);
   html+='</div>';
 
   html+=`<div class="rec-section"><div class="rec-section-title">🟡 Needs Attention</div>`;
@@ -1590,7 +1630,16 @@ function parseCSV(text){
   const headers=lines[0].split(',').map(h=>h.replace(/^"|"$/g,'').trim());
   const rows=lines.slice(1).map(line=>{
     const cells=[]; let cur='',inQ=false;
-    for(let i=0;i<line.length;i++){const ch=line[i];if(ch==='"'){inQ=!inQ;continue;}if(ch===','&&!inQ){cells.push(cur.trim());cur='';}else cur+=ch;}
+    for(let i=0;i<line.length;i++){
+      const ch=line[i];
+      if(ch==='"'){
+        if(inQ&&line[i+1]==='"'){cur+='"';i++;}  // escaped "" → literal "
+        else{inQ=!inQ;}
+        continue;
+      }
+      if(ch===','&&!inQ){cells.push(cur.trim());cur='';}
+      else cur+=ch;
+    }
     cells.push(cur.trim());
     return Object.fromEntries(headers.map((h,i)=>[h,cells[i]??'']));
   }).filter(r=>Object.values(r).some(v=>v));
@@ -1627,9 +1676,10 @@ function doPreview(){
 function doImport(){
   const existing=new Set(inspections.map(fingerprint));
   let added=0,skipped=0;
+  const baseId=Date.now();
   csvRows.forEach(row=>{
     const rec={
-      id:Date.now()+Math.random(), date:new Date().toISOString().split('T')[0],
+      id:baseId+added+skipped, date:new Date().toISOString().split('T')[0],
       inspector:(row[mapping.inspector]||'').trim(),
       caseNumber:extractCaseNumber(row[mapping.caseNumber]||''),
       type:(row[mapping.type]||'Building').trim(),
